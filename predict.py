@@ -14,7 +14,7 @@ from pyannote.audio import Pipeline
 from transformers.pipelines.audio_utils import ffmpeg_read
 from transformers.models.whisper.tokenization_whisper import LANGUAGES
 from cog import BasePredictor, Input, Path
-
+import tempfile
 
 PIPELINE_URL = (
     "https://weights.replicate.delivery/default/incredibly-fast-whisper-pipe.tar"
@@ -154,6 +154,34 @@ class Predictor(BasePredictor):
         print("Voila!✨ Your file has been transcribed!")
         return outputs
 
+import subprocess
+import numpy as np
+
+def ffmpeg_read_from_file(filepath: str, sampling_rate: 16000) -> np.array:
+    ar = f"{sampling_rate}"
+    ac = "1"
+    format_for_conversion = "f32le"
+    ffmpeg_command = [
+        "ffmpeg",
+        "-i", filepath,
+        "-ac", ac,
+        "-ar", ar,
+        "-f", format_for_conversion,
+        "-hide_banner",
+        "-loglevel", "error",
+        "pipe:1",
+    ]
+
+    with subprocess.Popen(ffmpeg_command, stdout=subprocess.PIPE, stderr=subprocess.PIPE) as ffmpeg_process:
+        output_stream, error_stream = ffmpeg_process.communicate()
+        if ffmpeg_process.returncode != 0:
+            print("FFmpeg Error:", error_stream.decode())
+
+    if not output_stream:
+        return np.array([])  # Returns an empty numpy array if no output
+
+    audio = np.frombuffer(output_stream, dtype=np.float32)
+    return audio
 
 def preprocess_inputs(inputs):
     if isinstance(inputs, str):
@@ -166,7 +194,12 @@ def preprocess_inputs(inputs):
                 inputs = f.read()
 
     if isinstance(inputs, bytes):
-        inputs = ffmpeg_read(inputs, 16000)
+        try:
+            inputs = ffmpeg_read(inputs, 16000)
+        except ValueError:
+            with tempfile.NamedTemporaryFile(mode='wb') as temp_file:
+                temp_file.write(inputs)
+                inputs = ffmpeg_read_from_file(temp_file.name)
 
     if isinstance(inputs, dict):
         # Accepting `"array"` which is the key defined in `datasets` for better integration
